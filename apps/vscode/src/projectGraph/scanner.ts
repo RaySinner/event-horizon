@@ -357,8 +357,11 @@ const SKIP_DIRS = new Set([
   'vendor',
   // Python
   '__pycache__', '.venv', 'venv', '.tox', '.pytest_cache', '.mypy_cache',
-  // .NET / NuGet
-  'bin', 'obj', 'packages',
+  // .NET / NuGet (NB: do NOT skip `packages` — that's the standard
+  // pnpm/yarn monorepo source directory. Modern .NET uses central
+  // package management and rarely has a `packages/` dir; the
+  // false-positive cost on JS monorepos is far higher.)
+  'bin', 'obj',
   // Generic build / vendor
   'target',
 ]);
