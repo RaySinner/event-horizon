@@ -186,7 +186,15 @@ export class TreeSitterExtractor {
     if (cached) return cached;
     await this.ensureInit();
     const mod = await this.loadModule();
-    const lang = await mod.Language.load(locateWasm(wasmFileFor(key)));
+    // Load the grammar WASM as raw bytes ourselves and hand the buffer
+    // to Language.load. The string-path overload routes through
+    // Emscripten's virtual FS, which isn't initialised in VS Code's
+    // extension host — every grammar load throws
+    // "Filename arg requires Emscripten FS". Buffers work in both
+    // standalone Node and extension contexts.
+    const wasmPath = locateWasm(wasmFileFor(key));
+    const wasmBuffer = await fs.promises.readFile(wasmPath);
+    const lang = await mod.Language.load(wasmBuffer);
     this.languages.set(key, lang);
     return lang;
   }
