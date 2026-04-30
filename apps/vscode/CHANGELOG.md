@@ -2,7 +2,7 @@
 
 All notable changes to the Event Horizon VS Code extension will be documented in this file.
 
-## [3.0.1] — TBD
+## [3.0.1] — 2026-04-30
 
 ### Added
 - **Scope-end graph refresh during orchestration**: `/eh-orchestrate` and `/eh:work-on-plan` now refresh the project graph automatically when they finish, using the list of files their workers touched. No more manual `/eh:optimize-context` rerun after every plan run; the graph reflects reality as soon as the orchestration reports its summary. Honors the original "no autoscan, no FileSystemWatcher" rule — the trigger is still an explicit user-invoked skill, not the filesystem.
