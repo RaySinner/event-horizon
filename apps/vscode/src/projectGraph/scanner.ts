@@ -5,6 +5,7 @@ import * as path from 'path';
 import type { GraphNode, GraphEdge, ProjectGraphStore } from './index.js';
 import type { TreeSitterExtractor } from './treeSitterExtractor.js';
 import { extractMarkdown } from './markdownExtractor.js';
+import { runResolution } from './resolution.js';
 
 type RationaleExtractFn = (
   filePath: string,
@@ -73,6 +74,8 @@ export interface ScanSummary {
   rootScanned?: string | undefined;
   /** Whether vscode.workspace.workspaceFolders was non-empty at scan time. */
   workspaceFoldersAvailable?: boolean;
+  /** Phase 12 — counts from the post-scan resolution pass. */
+  resolution?: { merged: number; unresolved: number; totalRefs: number };
 }
 
 export class ProjectGraphScanner {
@@ -263,8 +266,37 @@ export class ProjectGraphScanner {
       } catch (err) {
         filesSkipped++;
         skipReasons.error++;
-        if (!firstError) firstError = `${path.basename(filePath)}: ${(err as Error).message ?? String(err)}`;
+        const fullMsg = `${path.basename(filePath)}: ${(err as Error).message ?? String(err)}`;
+        if (!firstError) firstError = fullMsg;
+        // Log only the first 5 errors so a project-wide breakage doesn't
+        // flood the Extension Host channel. The first error is almost
+        // always representative — if every TS file blows up, the cause
+        // is the same for all of them.
+        if (skipReasons.error <= 5) {
+          console.error(`[Event Horizon] Scanner extraction error: ${fullMsg}`);
+          if (skipReasons.error === 1 && err instanceof Error && err.stack) {
+            console.error(err.stack);
+          }
+        }
       }
+    }
+
+    // Phase 12: post-scan resolution pass — merges INFERRED placeholder
+    // nodes into their EXTRACTED counterparts using qualified callee
+    // info + member_of/imports/extends edges. Runs once per workspace
+    // scan (not per-file) so it sees the full graph at the moment of
+    // resolution.
+    let resolution: { merged: number; unresolved: number; totalRefs: number } | undefined;
+    try {
+      const store = this.storeResolver();
+      if (store) {
+        resolution = runResolution(store);
+        console.log(
+          `[Event Horizon] Resolution: merged ${resolution.merged} / ${resolution.totalRefs} placeholders, ${resolution.unresolved} remain unresolved`,
+        );
+      }
+    } catch (err) {
+      console.error('[Event Horizon] Resolution pass failed:', err);
     }
 
     return {
@@ -278,6 +310,7 @@ export class ProjectGraphScanner {
       skipReasons,
       rootScanned: root,
       workspaceFoldersAvailable: !!liveFolder,
+      resolution,
     } as ScanSummary;
   }
 
