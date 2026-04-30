@@ -90,9 +90,12 @@ describe('layoutNodes (Barnes-Hut)', () => {
     expect(elapsed).toBeLessThan(2000);
   });
 
-  it('lays out 1000 nodes within a generous CI budget', () => {
-    // Slower CI environments (windows-latest, single-vCPU) miss the local
-    // 2 s window. 6 s gives headroom while still catching a real regression.
+  it('lays out 1000 nodes within a generous CI budget', { timeout: 15000 }, () => {
+    // Slower CI runners (single-vCPU GitHub-hosted Linux, Windows, etc.)
+    // miss the local 2 s window. 8 s budget gives headroom while still
+    // catching a real regression. Per-test timeout is set explicitly to
+    // 15 s — vitest's default 5 s would kill the test before our budget
+    // assertion can run, hiding any "passed but slow" regression.
     const N = 1000;
     const nodes = makeNodes(N);
     const edges = makeChainEdges(N);
@@ -102,7 +105,7 @@ describe('layoutNodes (Barnes-Hut)', () => {
     const elapsed = performance.now() - t0;
 
     expect(positions.size).toBe(N);
-    expect(elapsed).toBeLessThan(6000);
+    expect(elapsed).toBeLessThan(8000);
   });
 
   it('does not produce coincident node positions', () => {
