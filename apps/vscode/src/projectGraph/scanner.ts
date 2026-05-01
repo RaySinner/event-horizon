@@ -70,8 +70,10 @@ export interface ScanSummary {
     /** File size exceeded the `projectGraph.maxFileSizeKb` cap. */
     tooLarge: number;
   };
-  /** The directory the walker actually rooted at — surfaces wrong-folder bugs. undefined when no workspace was open. */
+  /** The primary directory the walker rooted at (workspaceFolders[0]) — surfaces wrong-folder bugs. undefined when no workspace was open. */
   rootScanned?: string | undefined;
+  /** All directories the walker rooted at, in workspaceFolders order. Multi-root workspaces include every folder. */
+  rootsScanned?: string[];
   /** Whether vscode.workspace.workspaceFolders was non-empty at scan time. */
   workspaceFoldersAvailable?: boolean;
   /** Phase 12 — counts from the post-scan resolution pass. */
@@ -136,8 +138,12 @@ export class ProjectGraphScanner {
     // file), refuse to scan — falling back to process.cwd() lands on VS Code's
     // own install directory in dev hosts and bundled extension dirs in packaged
     // installs, indexing files that have nothing to do with the user's project.
-    const liveFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!liveFolder) {
+    //
+    // Multi-root workspaces: walk every folder, not just [0]. Otherwise users
+    // who add multiple folders to a single VS Code window only get the first
+    // folder indexed.
+    const roots = getWorkspaceRoots();
+    if (roots.length === 0) {
       return {
         filesProcessed: 0,
         filesSkipped: 0,
@@ -147,11 +153,12 @@ export class ProjectGraphScanner {
         filesMatched: 0,
         skipReasons,
         rootScanned: undefined,
+        rootsScanned: [],
         workspaceFoldersAvailable: false,
         firstError: 'No workspace folder open. Use File → Open Folder in this window before running /eh:optimize-context.',
       } as ScanSummary;
     }
-    const root = liveFolder;
+    const root = roots[0]!;
 
     // Resolve the active per-project graph store. With the lifecycle in place
     // this is non-null whenever workspaceFolders[0] is set, but we re-check
@@ -168,7 +175,8 @@ export class ProjectGraphScanner {
         filesMatched: 0,
         skipReasons,
         rootScanned: root,
-        workspaceFoldersAvailable: !!liveFolder,
+        rootsScanned: roots,
+        workspaceFoldersAvailable: true,
         firstError:
           'Project graph DB not open for this workspace. Reload the window and re-run the build.',
       } as ScanSummary;
@@ -184,7 +192,18 @@ export class ProjectGraphScanner {
     const cfgMaxKb = vscode.workspace.getConfiguration('eventHorizon').get<number>('projectGraph.maxFileSizeKb', DEFAULT_MAX_FILE_SIZE_KB);
     const maxFileSizeBytes = (cfgMaxKb && cfgMaxKb > 0 ? cfgMaxKb : DEFAULT_MAX_FILE_SIZE_KB) * 1024;
 
-    const allFiles = await walkDir(root);
+    // Walk every workspace root, deduping files in case roots are nested
+    // (e.g. one folder contains another) or duplicated.
+    const allFiles: string[] = [];
+    const seenFiles = new Set<string>();
+    for (const r of roots) {
+      const files = await walkDir(r);
+      for (const fp of files) {
+        if (seenFiles.has(fp)) continue;
+        seenFiles.add(fp);
+        allFiles.push(fp);
+      }
+    }
     const matched = allFiles.filter((p) => {
       const ext = path.extname(p).toLowerCase();
       const base = path.basename(p);
@@ -309,7 +328,8 @@ export class ProjectGraphScanner {
       firstError,
       skipReasons,
       rootScanned: root,
-      workspaceFoldersAvailable: !!liveFolder,
+      rootsScanned: roots,
+      workspaceFoldersAvailable: true,
       resolution,
     } as ScanSummary;
   }
@@ -329,10 +349,15 @@ export class ProjectGraphScanner {
     const effective = [...paths];
 
     if (opts?.sinceMs !== undefined) {
-      const liveFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (liveFolder) {
-        const allFiles = await walkDir(liveFolder);
+      // Walk every workspace root for multi-root workspaces; otherwise files
+      // outside folders[0] never get picked up by sinceMs expansion.
+      const roots = getWorkspaceRoots();
+      const seenWalked = new Set<string>();
+      for (const r of roots) {
+        const allFiles = await walkDir(r);
         for (const fp of allFiles) {
+          if (seenWalked.has(fp)) continue;
+          seenWalked.add(fp);
           if (seen.has(fp)) continue;
           const ext = path.extname(fp).toLowerCase();
           if (!CODE_EXTENSIONS.has(ext) && !MD_EXTENSIONS.has(ext)) continue;
@@ -553,6 +578,26 @@ const SKIP_DIRS = new Set([
   // Generic build / vendor
   'target',
 ]);
+
+/**
+ * Resolve every folder in `vscode.workspace.workspaceFolders` to an absolute
+ * path, in workspace order. Empty strings and duplicates are dropped — but the
+ * walker itself dedupes file results, so nested roots are also safe.
+ */
+function getWorkspaceRoots(): string[] {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const f of folders) {
+    const fp = f?.uri?.fsPath;
+    if (!fp) continue;
+    const norm = path.resolve(fp);
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(norm);
+  }
+  return out;
+}
 
 async function walkDir(root: string): Promise<string[]> {
   const out: string[] = [];
