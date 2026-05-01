@@ -2,6 +2,11 @@
 
 All notable changes to the Event Horizon VS Code extension will be documented in this file.
 
+## [3.0.3] — 2026-05-01
+
+### Changed
+- **License switched to pure MIT.** Previous LICENSE was "MIT License with Commons Clause", which GitHub's licensee detector classified as a non-standard license (`spdx_id: NOASSERTION`) and blocked badges, license-aware tooling, and enterprise compliance scanners that flag Commons Clause as forbidden. Project is now plain MIT: standard permissive terms, no resale restrictions, no addenda. Aligns with how the project has always been described in marketing copy and on the marketplace listings. `package.json` `license` fields now declare `"MIT"` directly instead of `"SEE LICENSE IN LICENSE"`.
+
 ## [3.0.2] — 2026-05-01
 
 ### Fixed
