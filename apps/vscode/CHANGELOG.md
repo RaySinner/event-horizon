@@ -7,6 +7,10 @@ All notable changes to the Event Horizon VS Code extension will be documented in
 ### Fixed
 - **Project graph only indexed the first folder of a multi-root workspace.** The scanner resolved the workspace as `vscode.workspace.workspaceFolders[0]` and walked only that path, so every other folder added to the same VS Code window was silently skipped — both during the initial `/eh:optimize-context` build and during the `sinceMs` rescan that orchestration uses to refresh after a plan run. Now walks every entry in `workspaceFolders`, deduping files so duplicated or nested roots don't double-index. The graph DB still lives at `<folder[0]>/.eh/graph.db`; only the walker behaviour changed.
 
+### Security
+- **postcss bumped to 8.5.10+** via pnpm override (CVE-2024 GHSA-qx2v-qp2m-jg93 — XSS via unescaped `</style>` in CSS Stringify Output). Dev-only transitive dep through `vite` / `vitest`; never shipped in the VSIX.
+- **uuid bumped to 14.0.0+** via pnpm override (GHSA-w5hq-g745-h8pq — missing buffer bounds check in `v3`/`v5`/`v6` when a `buf` argument is supplied). Dev-only transitive dep through `@vscode/vsce` → `@azure/identity` → `@azure/msal-node`; only reached during marketplace publish, never in the runtime VSIX.
+
 ## [3.0.1] — 2026-04-30
 
 ### Added
