@@ -110,7 +110,7 @@ jobs:
 
     steps:
       - name: Delete old dev artifacts (keep latest 3)
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const artifacts = await github.rest.actions.listArtifactsForRepo({
@@ -244,7 +244,7 @@ jobs:
 
     steps:
       - name: Delete old pre-releases (keep latest 5)
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const releases = await github.rest.repos.listReleases({
