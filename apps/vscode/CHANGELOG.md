@@ -2,6 +2,11 @@
 
 All notable changes to the Event Horizon VS Code extension will be documented in this file.
 
+## [3.0.2] — Unreleased
+
+### Fixed
+- **Project graph only indexed the first folder of a multi-root workspace.** The scanner resolved the workspace as `vscode.workspace.workspaceFolders[0]` and walked only that path, so every other folder added to the same VS Code window was silently skipped — both during the initial `/eh:optimize-context` build and during the `sinceMs` rescan that orchestration uses to refresh after a plan run. Now walks every entry in `workspaceFolders`, deduping files so duplicated or nested roots don't double-index. The graph DB still lives at `<folder[0]>/.eh/graph.db`; only the walker behaviour changed.
+
 ## [3.0.1] — 2026-04-30
 
 ### Added
