@@ -178,16 +178,25 @@ export async function setupCursorHooks(): Promise<void> {
 }
 
 /**
+ * Build a Cursor MCP server entry (pure function, testable without FS).
+ * Includes the startup token as a static Authorization header so first-party
+ * clients connect directly; the hybrid `/mcp` route also accepts JWTs.
+ */
+export function buildCursorMcpEntry(port: number, token: string | null): Record<string, unknown> {
+  const entry: Record<string, unknown> = { url: `http://127.0.0.1:${port}/mcp` };
+  if (token) entry.headers = { Authorization: `Bearer ${token}` };
+  return entry;
+}
+
+/**
  * Register Event Horizon as an MCP server in ~/.cursor/mcp.json.
  * Reads existing config, merges our entry without overwriting other servers.
  */
 export async function registerCursorMcpServer(): Promise<void> {
   const mcpJsonPath = path.join(os.homedir(), '.cursor', 'mcp.json');
-  const port = getPort();
-  // v2.0.0: MCP URL no longer carries ?token=. Cursor's MCP client discovers
-  // auth via RFC 9728 .well-known/oauth-protected-resource and obtains JWT
-  // access tokens through OAuth 2.1 client_credentials flow.
-  const mcpUrl = `http://127.0.0.1:${port}/mcp`;
+  // v2.0.0+: hybrid auth — first-party clients send the startup token as a
+  // Bearer header; third-party clients can still use OAuth 2.1 discovery.
+  const token = getAuthToken();
 
   let config: Record<string, unknown> = {};
   try {
@@ -198,7 +207,7 @@ export async function registerCursorMcpServer(): Promise<void> {
   }
 
   const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
-  servers['event-horizon'] = { url: mcpUrl };
+  servers['event-horizon'] = buildCursorMcpEntry(getPort(), token);
   config.mcpServers = servers;
 
   const dir = path.dirname(mcpJsonPath);

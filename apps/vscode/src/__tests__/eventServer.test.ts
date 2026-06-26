@@ -385,12 +385,24 @@ describe('HTTP server', () => {
       expect(String(wwwAuth)).toMatch(/^Bearer resource_metadata="http:\/\/.+\/\.well-known\/oauth-protected-resource"$/);
     });
 
-    it('rejects /mcp with the startup token used as Bearer (JWT required)', async () => {
+    it('accepts /mcp with the startup token as Bearer (hybrid auth)', async () => {
       _setAuthToken(SECRET);
       const res = await post('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list' }, {
         Authorization: `Bearer ${SECRET}`,
       });
+      // Without a real mcpServer wired the route returns 503; auth itself
+      // should have passed (not 401) and there must be no WWW-Authenticate.
+      expect([500, 503]).toContain(res.status);
+      expect(res.headers['www-authenticate']).toBeUndefined();
+    });
+
+    it('rejects /mcp with a wrong raw startup token (401 + WWW-Authenticate)', async () => {
+      _setAuthToken(SECRET);
+      const res = await post('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list' }, {
+        Authorization: 'Bearer wrong-raw-token',
+      });
       expect(res.status).toBe(401);
+      expect(typeof res.headers['www-authenticate']).toBe('string');
     });
 
     it('rejects /mcp with an expired JWT', async () => {

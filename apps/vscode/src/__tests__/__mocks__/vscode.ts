@@ -29,6 +29,11 @@ export const window = {
     dispose: () => {},
     name: opts?.name ?? `mock-${++terminalIdCounter}`,
   }),
+  createOutputChannel: (_name: string) => ({
+    appendLine: () => {},
+    show: () => {},
+    dispose: () => {},
+  }),
   terminals: [],
 };
 

@@ -76,6 +76,58 @@ export interface JwtVerifyResult {
   reason?: string;
 }
 
+/**
+ * Constant-time string comparison. Prevents timing side-channels by always
+ * comparing the full length of two equal-length buffers.
+ */
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
+export type McpAuthMethod = 'startup_token' | 'jwt';
+
+export interface McpAuthResult {
+  valid: boolean;
+  reason?: string; // missing_bearer | empty_token | startup_mismatch | <jwt reason>
+  authMethod?: McpAuthMethod;
+  payload?: JwtPayload; // only for authMethod === 'jwt'
+}
+
+/**
+ * HYBRID validation for the `/mcp` Authorization header.
+ * First-party MCP clients (Claude Code, Copilot, Cursor, OpenCode) send the
+ * raw startup token as `Authorization: Bearer <startup-token>`. Third-party
+ * clients discover OAuth metadata and send a JWT. This validator accepts both,
+ * returning 401 + WWW-Authenticate only when neither matches.
+ */
+export function validateMcpAccessToken(
+  authorizationHeader: string | undefined,
+  startupToken: string,
+): McpAuthResult {
+  if (!authorizationHeader || !authorizationHeader.startsWith('Bearer ')) {
+    return { valid: false, reason: 'missing_bearer' };
+  }
+  const token = authorizationHeader.slice(7).trim();
+  if (!token) {
+    return { valid: false, reason: 'empty_token' };
+  }
+  // 1) startup token (first-party)
+  if (timingSafeStringEqual(token, startupToken)) {
+    return { valid: true, authMethod: 'startup_token' };
+  }
+  // 2) JWT (third-party OAuth)
+  const jwt = verifyJwt(token, startupToken);
+  if (jwt.valid) {
+    return { valid: true, authMethod: 'jwt', payload: jwt.payload };
+  }
+  // 3) invalid — distinguish raw mismatch from JWT errors for diagnostics
+  const isProbablyRaw = token.split('.').length !== 3;
+  return { valid: false, reason: isProbablyRaw ? 'startup_mismatch' : (jwt.reason ?? 'invalid') };
+}
+
 export function verifyJwt(token: string, secret: string): JwtVerifyResult {
   const parts = token.split('.');
   if (parts.length !== 3) {

@@ -1,6 +1,6 @@
-# MCP Authentication (v2.0.0)
+# MCP Authentication (v2.0.0+)
 
-Event Horizon's local HTTP server on `127.0.0.1:28765` implements full OAuth 2.1 authentication for its MCP endpoint, compliant with the Model Context Protocol specification (2025-06-18). This document describes the auth flow, the endpoint surface, and the security model.
+Event Horizon's local HTTP server on `127.0.0.1:28765` (configurable, with fallback to the next available port) implements full OAuth 2.1 authentication for its MCP endpoint, compliant with the Model Context Protocol specification (2025-06-18). This document describes the auth flow, the endpoint surface, and the security model.
 
 ## What changed in v2.0.0
 
@@ -8,10 +8,10 @@ Prior to v2.0.0, authentication was a single static token passed via `?token=` q
 
 **Breaking changes:**
 - `?token=<value>` query-string auth is **no longer accepted** on any endpoint. All requests must present `Authorization: Bearer <token>`.
-- `/mcp` now requires a **JWT access token** obtained through the OAuth 2.1 authorization-code flow (the default for MCP clients). A `client_credentials` flow is also supported for CLI/automation callers.
+- `/mcp` accepts **either** a `JWT access token` (third-party OAuth 2.1 clients) **or** the raw `startup token` as a Bearer header (first-party clients configured by Event Horizon). Both paths are valid simultaneously.
 - Existing users must run **"Event Horizon: Connect Claude Code"** (or the equivalent for OpenCode / Copilot / Cursor) once after upgrading to regenerate hooks and MCP configs.
 
-Internal hooks continue to authenticate with the startup token directly via `Authorization: Bearer <startup-token>` — no OAuth flow is required for first-party callers. OAuth is specifically what MCP clients use to reach `/mcp`.
+Internal hooks and the generated MCP configs for first-party clients include the startup token directly via `Authorization: Bearer <startup-token>` — no OAuth flow is required for those callers. OAuth remains the default path for unconfigured third-party MCP clients that discover the server via RFC 9728.
 
 ## Auth flow for MCP clients (authorization_code + PKCE + refresh_token)
 
@@ -124,7 +124,7 @@ Use the returned JWT as the `Authorization: Bearer` header on `/mcp`. `client_cr
 | POST   | `/oauth/register`                                | Open (RFC 7591 default)                             | Dynamic Client Registration — returns `client_id`/`client_secret`.           | RFC 7591          |
 | GET    | `/oauth/authorize`                               | Public (auto-approved for localhost)                | Authorization endpoint. Validates PKCE params, issues code, redirects.       | RFC 6749 §3.1     |
 | POST   | `/oauth/token`                                   | Body credentials (client_secret or PKCE verifier)   | Token endpoint. Supports `authorization_code`, `refresh_token`, `client_credentials`. | RFC 6749 §3.2 |
-| POST   | `/mcp`                                           | `Authorization: Bearer <JWT access token>`          | MCP JSON-RPC 2.0 endpoint. 401 responses include `WWW-Authenticate`.         | MCP 2025-06-18    |
+| POST   | `/mcp`                                           | `Authorization: Bearer <JWT or startup token>`      | MCP JSON-RPC 2.0 endpoint. Hybrid auth: accepts OAuth JWT or raw startup token. 401 responses include `WWW-Authenticate`. | MCP 2025-06-18    |
 | POST   | `/claude`, `/copilot`, `/opencode`, `/cursor`    | `Authorization: Bearer <startup-token>`             | Agent hook ingestion. Internal use.                                          | —                 |
 | POST   | `/events`                                        | `Authorization: Bearer <startup-token>`             | Raw AgentEvent ingestion.                                                    | —                 |
 | POST   | `/lock`, `/lock/status`                          | `Authorization: Bearer <startup-token>`             | File-lock coordination.                                                      | —                 |
@@ -134,10 +134,16 @@ Use the returned JWT as the `Authorization: Bearer` header on `/mcp`. `client_cr
 
 Internal callers already possess the startup token (it's written into their generated config files at install time) and therefore send it directly as `Authorization: Bearer <startup-token>` without running the OAuth flow. This keeps hook-script complexity minimal — no token refresh, no client registration, just a static bearer header.
 
+The same startup token is also baked into the MCP server entries that Event Horizon registers for first-party clients, so they connect to `/mcp` with the startup token instead of running OAuth discovery:
+
 - **Claude Code hooks** (`~/.claude/settings.json`) — curl with `-H "Authorization: Bearer $TOKEN"`.
+- **Claude Code MCP** (`~/.claude.json`) — `mcpServers["event-horizon"].headers.Authorization = "Bearer <startup-token>"`.
 - **OpenCode plugin** (`~/.config/opencode/plugins/event-horizon.ts`) — `fetch` with the `Authorization` header set to `"Bearer " + AUTH_TOKEN`.
+- **OpenCode MCP** (`~/.config/opencode/opencode.json`) — `mcp["event-horizon"].headers.Authorization = "Bearer <startup-token>"`.
 - **Copilot hooks** (`~/.event-horizon/copilot-hooks.json`) — curl with `-H "Authorization: Bearer <token>"`.
+- **Copilot MCP** (`.vscode/mcp.json`) — `servers["event-horizon"].headers.Authorization = "Bearer <startup-token>"`.
 - **Cursor hooks** (`~/.cursor/hooks.json`) — curl with `-H "Authorization: Bearer <token>"`.
+- **Cursor MCP** (`~/.cursor/mcp.json`) — `mcpServers["event-horizon"].headers.Authorization = "Bearer <startup-token>"`.
 - **Spawned agents** — inherit `EH_AUTH_TOKEN` via env var; their own hooks carry the Bearer header.
 
 Each install regenerates these files with the current startup token, so a VS Code reload (which rotates the startup token) invalidates prior configs. The stale-detection in each setup module identifies legacy `?token=` configs or mismatched tokens and triggers regeneration.
@@ -155,7 +161,7 @@ If you skip step 2, hooks from v1.x will return `401 Unauthorized` on every requ
 ## Security model
 
 - **Transport**: server binds to `127.0.0.1` only. Not reachable from the network.
-- **Startup token**: 192-bit random hex, rotated on every extension activation. Stored in globalState so reconnecting agents can stay authenticated across VS Code reloads until the extension truly restarts.
+- **Startup token**: 192-bit random hex, rotated on every extension activation. Stored in `ExtensionContext.secrets` (encrypted, not synced via Settings Sync) so reconnecting agents can stay authenticated across VS Code reloads until the extension truly restarts. On first run after upgrading from v2.0.0–2.x the token is migrated from `globalState` into `secrets`, then removed from `globalState`.
 - **JWT signing**: HS256 with the startup token as the HMAC secret. Tokens are invalidated when the extension restarts (new startup token → old JWTs fail signature check).
 - **JWT lifetimes**: access tokens 1 hour, refresh tokens 30 days. Both are invalidated on extension restart regardless of their nominal expiry.
 - **PKCE**: required on the `authorization_code` flow. S256 and plain are both supported; S256 is the default for every MCP client we've seen.
@@ -170,7 +176,12 @@ If you skip step 2, hooks from v1.x will return `401 Unauthorized` on every requ
 | Caller                           | Auth                                                      | Why                                                                                     |
 |----------------------------------|-----------------------------------------------------------|-----------------------------------------------------------------------------------------|
 | First-party hooks (Claude Code, OpenCode, Copilot, Cursor) | `Authorization: Bearer <startup-token>`                   | Already configured with the startup token at install time. Running an OAuth flow from a shell hook adds token-refresh complexity for no security gain. |
+| First-party MCP configs (same agents) | `Authorization: Bearer <startup-token>` (via `headers`) | Event Horizon writes the startup token into the agent's MCP config. This avoids races with OAuth discovery/JWT expiry that previously caused `barrier token mismatch` errors. |
 | Standard MCP clients (default)   | OAuth 2.1 authorization_code + PKCE + refresh_token → JWT | MCP spec default. Clients discover the server via RFC 9728, register via DCR, and run the full browser-redirect flow (auto-approved for localhost). |
 | CLI / scripts / automation       | OAuth 2.1 client_credentials → JWT                        | Skips the browser redirect. Any caller that already knows the startup token can trade it for a JWT at `/oauth/token` without DCR. |
 
-All three paths ultimately validate knowledge of the startup token, just through different schemes. A third-party MCP client cannot skip the OAuth flow because `/mcp` rejects the raw startup token; conversely, hook scripts don't need OAuth because they send payloads to `/claude`, `/opencode`, etc., not `/mcp`.
+All paths ultimately validate knowledge of the startup token. First-party MCP clients use the raw startup token directly; third-party clients use the OAuth 2.1 flows. The `/mcp` endpoint is hybrid and accepts either form of Bearer. A client that sends neither a valid startup token nor a valid JWT receives `401 + WWW-Authenticate`, triggering OAuth discovery if it supports it.
+
+## Diagnostics
+
+Authentication failures on `/mcp` and `/ws` are logged to the **Event Horizon Auth** output channel. Each entry records the route, HTTP status, failure reason (for example `missing_bearer`, `startup_mismatch`, `expired`), and whether a Bearer header was present — the token value itself is never logged.

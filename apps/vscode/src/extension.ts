@@ -151,7 +151,7 @@ function areAgentsCooperating(cwdA: string, cwdB: string): boolean {
   return false;
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const eventBus = new EventBus();
   const metricsEngine = new MetricsEngine();
   const agentStateManager = new AgentStateManager();
@@ -160,7 +160,26 @@ export function activate(context: vscode.ExtensionContext): void {
   // Expose extension root so /logo.png can locate assets/icon.png.
   setExtensionRoot(context.extensionPath);
 
-  // Initialize MCP server with runtime dependencies
+  // Restore auth token from SecretStorage (encrypted, not synced via Settings Sync)
+  let savedToken = await context.secrets.get('eventServerToken');
+  if (!savedToken) {
+    // One-time migration: globalState (v2.0.0–2.x) → secrets
+    const legacy = context.globalState.get<string>('eventServerToken');
+    if (legacy) {
+      savedToken = legacy;
+      try {
+        await context.secrets.store('eventServerToken', legacy);
+        await context.globalState.update('eventServerToken', undefined); // clear plaintext
+      } catch (err) {
+        console.error('[Event Horizon] Token migration to secrets failed:', err);
+      }
+    }
+  }
+  if (savedToken) {
+    setAuthToken(savedToken);
+  }
+
+  // Initialize MCP server with runtime dependencies now that the token is restored
   initMcpServer({ agentStateManager, metricsEngine });
 
   // Restore plans from globalState (survives window reload)
@@ -1365,16 +1384,18 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // Restore auth token from globalState so hooks/MCP configs stay valid across restarts
-  const savedToken = context.globalState.get<string>('eventServerToken');
-  if (savedToken) {
-    setAuthToken(savedToken);
-  }
-
   startEventServer({ onEvent: (event) => eventBus.emit(event) }, configuredPort)
     .then(async (actualPort) => {
       // Persist the auth token (may be restored or newly generated)
-      void context.globalState.update('eventServerToken', getAuthToken());
+      const token = getAuthToken();
+      if (token) {
+        try {
+          await context.secrets.store('eventServerToken', token);
+        } catch (err) {
+          console.error('[Event Horizon] Failed to persist auth token to secrets:', err);
+          void vscode.window.showWarningMessage('Event Horizon: could not persist auth token; MCP hooks may need re-setup after restart.');
+        }
+      }
       // If the port changed (fallback), update the port reference for hooks
       if (actualPort !== configuredPort) {
         // Update the in-memory port so hooks point to the right port

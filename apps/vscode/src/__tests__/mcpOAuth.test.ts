@@ -7,6 +7,7 @@ import {
   handleRegister,
   handleToken,
   validateAccessToken,
+  validateMcpAccessToken,
   JWT_TTL_SECONDS,
 } from '../mcpOAuth.js';
 
@@ -359,5 +360,66 @@ describe('mcpOAuth — validateAccessToken', () => {
     const result = validateAccessToken('Bearer ', SECRET);
     expect(result.valid).toBe(false);
     expect(result.reason).toBe('empty_token');
+  });
+});
+
+describe('mcpOAuth — validateMcpAccessToken (hybrid)', () => {
+  it('accepts the startup token as Bearer (first-party)', () => {
+    const result = validateMcpAccessToken(`Bearer ${SECRET}`, SECRET);
+    expect(result.valid).toBe(true);
+    expect(result.authMethod).toBe('startup_token');
+  });
+
+  it('accepts a valid JWT as Bearer (third-party OAuth)', () => {
+    const token = signJwt({ sub: 'client-1', iss: ISSUER }, SECRET);
+    const result = validateMcpAccessToken(`Bearer ${token}`, SECRET);
+    expect(result.valid).toBe(true);
+    expect(result.authMethod).toBe('jwt');
+    expect(result.payload?.sub).toBe('client-1');
+  });
+
+  it('rejects a wrong raw token with reason startup_mismatch', () => {
+    const result = validateMcpAccessToken('Bearer wrong-raw-token', SECRET);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('startup_mismatch');
+  });
+
+  it('rejects an expired JWT with reason expired', () => {
+    const token = signJwt({ sub: 'client-1', iss: ISSUER }, SECRET, -1);
+    const result = validateMcpAccessToken(`Bearer ${token}`, SECRET);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('expired');
+  });
+
+  it('rejects a tampered JWT with reason signature', () => {
+    const token = signJwt({ sub: 'client-1', iss: ISSUER }, SECRET);
+    const [h, _p, s] = token.split('.');
+    const tamperedPayload = Buffer.from(JSON.stringify({ sub: 'attacker', iss: ISSUER, exp: 9999999999 }))
+      .toString('base64')
+      .replace(/=+$/, '')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_');
+    const tampered = `${h}.${tamperedPayload}.${s}`;
+    const result = validateMcpAccessToken(`Bearer ${tampered}`, SECRET);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('signature');
+  });
+
+  it('rejects a missing header', () => {
+    const result = validateMcpAccessToken(undefined, SECRET);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('missing_bearer');
+  });
+
+  it('rejects an empty Bearer value', () => {
+    const result = validateMcpAccessToken('Bearer ', SECRET);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('empty_token');
+  });
+
+  it('uses constant-time comparison (wrong-length token returns false safely)', () => {
+    const result = validateMcpAccessToken(`Bearer ${SECRET}x`, SECRET);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('startup_mismatch');
   });
 });

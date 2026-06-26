@@ -11,9 +11,11 @@ import * as vscode from 'vscode';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { getAuthToken } from './eventServer.js';
+import { getAuthToken, getEventServerPort } from './eventServer.js';
 
-const PORT = 28765;
+function getPort(): number {
+  return getEventServerPort();
+}
 const PLUGIN_FILENAME = 'event-horizon.ts';
 
 /** Marker comment so we can identify our plugin file. */
@@ -34,7 +36,7 @@ function buildPluginSource(): string {
 // Forwards OpenCode events to the Event Horizon visualization server.
 // Do not edit — reinstall from Event Horizon's Connect panel.
 
-const PORT = ${PORT};
+const PORT = ${getPort()};
 const AUTH_TOKEN = "${token}";
 const AUTH_HEADERS = AUTH_TOKEN
   ? { "Content-Type": "application/json", "Authorization": "Bearer " + AUTH_TOKEN }
@@ -271,7 +273,8 @@ export async function setupOpenCodeHooks(): Promise<void> {
 async function updateOpenCodeConfigHooks(): Promise<void> {
   const configPath = path.join(os.homedir(), '.opencode', 'config.json');
   const token = getAuthToken();
-  const baseUrl = `http://127.0.0.1:${PORT}/opencode`;
+  const port = getPort();
+  const baseUrl = `http://127.0.0.1:${port}/opencode`;
   const authHeader = token ? `-H "Authorization: Bearer ${token}"` : '';
   try {
     const raw = await fsp.readFile(configPath, 'utf8');
@@ -281,7 +284,7 @@ async function updateOpenCodeConfigHooks(): Promise<void> {
     let changed = false;
     for (const entries of Object.values(hooks)) {
       for (const entry of entries) {
-        if (typeof entry.command === 'string' && entry.command.includes(`127.0.0.1:${PORT}/opencode`)) {
+        if (typeof entry.command === 'string' && /127\.0\.0\.1:\d+\/opencode/.test(entry.command)) {
           const newCmd = `curl -s -X POST ${baseUrl} -H "Content-Type: application/json" ${authHeader} --data-binary @-`;
           if (entry.command !== newCmd) {
             entry.command = newCmd;
@@ -297,15 +300,25 @@ async function updateOpenCodeConfigHooks(): Promise<void> {
 }
 
 /**
+ * Build an OpenCode MCP server entry (pure function, testable without FS).
+ * Includes the startup token as a static Authorization header so first-party
+ * clients connect directly; the hybrid `/mcp` route also accepts JWTs.
+ */
+export function buildOpenCodeMcpEntry(port: number, token: string | null): Record<string, unknown> {
+  const entry: Record<string, unknown> = { type: 'remote', url: `http://127.0.0.1:${port}/mcp`, enabled: true };
+  if (token) entry.headers = { Authorization: `Bearer ${token}` };
+  return entry;
+}
+
+/**
  * Register Event Horizon as an MCP server in OpenCode's config.
  * Reads ~/.config/opencode/opencode.json, merges our entry under "mcp".
  */
 export async function registerOpenCodeMcpServer(): Promise<void> {
   const configPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-  // v2.0.0: MCP URL no longer carries ?token=. OpenCode's MCP client
-  // discovers auth via RFC 9728 .well-known/oauth-protected-resource and
-  // obtains JWT access tokens through OAuth 2.1 client_credentials flow.
-  const mcpUrl = `http://127.0.0.1:${PORT}/mcp`;
+  // v2.0.0+: hybrid auth — first-party clients send the startup token as a
+  // Bearer header; third-party clients can still use OAuth 2.1 discovery.
+  const token = getAuthToken();
 
   let config: Record<string, unknown> = {};
   try {
@@ -316,7 +329,7 @@ export async function registerOpenCodeMcpServer(): Promise<void> {
   }
 
   const mcp = (config.mcp ?? {}) as Record<string, unknown>;
-  mcp['event-horizon'] = { type: 'remote', url: mcpUrl, enabled: true };
+  mcp['event-horizon'] = buildOpenCodeMcpEntry(getPort(), token);
   config.mcp = mcp;
 
   const dir = path.dirname(configPath);

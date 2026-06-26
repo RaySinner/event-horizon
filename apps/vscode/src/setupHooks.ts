@@ -7,9 +7,11 @@ import * as vscode from 'vscode';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { getAuthToken } from './eventServer.js';
+import { getAuthToken, getEventServerPort } from './eventServer.js';
 
-const PORT = 28765;
+function getPort(): number {
+  return getEventServerPort();
+}
 
 const EH_HOOK_EVENTS = [
   'SessionStart',
@@ -33,7 +35,7 @@ const EH_HOOK_EVENTS = [
 ] as const;
 
 function buildEhUrl(): string {
-  return `http://127.0.0.1:${PORT}/claude`;
+  return `http://127.0.0.1:${getPort()}/claude`;
 }
 
 function buildAuthHeader(): string {
@@ -58,8 +60,9 @@ export async function ensureLockScripts(): Promise<{ checkScript: string; releas
   await fsp.mkdir(dir, { recursive: true });
 
   const token = getAuthToken();
-  const lockUrl = `http://127.0.0.1:${PORT}/lock`;
-  const claudeUrl = `http://127.0.0.1:${PORT}/claude`;
+  const port = getPort();
+  const lockUrl = `http://127.0.0.1:${port}/lock`;
+  const claudeUrl = `http://127.0.0.1:${port}/claude`;
   const authHeaderLine = token ? `-H "Authorization: Bearer ${token}"` : '';
 
   const checkScript = path.join(dir, 'eh-lock-check.sh');
@@ -129,14 +132,14 @@ function isEhHook(h: Record<string, unknown>): boolean {
   if (typeof h.command === 'string') {
     // Empty commands left from manual cleanup — treat as ours to remove
     if (h.command === '') return true;
-    if (h.command.includes(`127.0.0.1:${PORT}/claude`)) return true;
-    if (h.command.includes(`127.0.0.1:${PORT}/lock`)) return true;
+    if (/127\.0\.0\.1:\d+\/claude/.test(h.command)) return true;
+    if (/127\.0\.0\.1:\d+\/lock/.test(h.command)) return true;
     if (h.command.includes('eh-lock-check.sh') || h.command.includes('eh-lock-release.sh')) return true;
     if (h.command.includes('.event-horizon')) return true;
     // Catch any inline bash -c lock scripts from previous broken versions
     if (h.command.includes('bash -c') && h.command.includes('file_path')) return true;
   }
-  if (typeof h.url === 'string' && h.url.includes(`127.0.0.1:${PORT}/claude`)) return true;
+  if (typeof h.url === 'string' && /127\.0\.0\.1:\d+\/claude/.test(h.url)) return true;
   return false;
 }
 
@@ -279,15 +282,25 @@ export async function setupClaudeCodeHooks(): Promise<void> {
 }
 
 /**
+ * Build a Claude Code MCP server entry (pure function, testable without FS).
+ * Includes the startup token as a static Authorization header so first-party
+ * clients connect directly; the hybrid `/mcp` route also accepts JWTs.
+ */
+export function buildClaudeMcpEntry(port: number, token: string | null): Record<string, unknown> {
+  const entry: Record<string, unknown> = { type: 'http', url: `http://127.0.0.1:${port}/mcp` };
+  if (token) entry.headers = { Authorization: `Bearer ${token}` };
+  return entry;
+}
+
+/**
  * Register Event Horizon as an MCP server in ~/.claude.json (global only).
  * Also cleans up any stale project-level .claude.json entries to prevent conflicts.
  */
 export async function registerMcpServer(): Promise<void> {
   const claudeJsonPath = path.join(os.homedir(), '.claude.json');
-  // v2.0.0: MCP URL no longer carries ?token=. Claude Code discovers auth via
-  // RFC 9728 .well-known/oauth-protected-resource and obtains JWT access
-  // tokens through OAuth 2.1 client_credentials flow.
-  const mcpUrl = `http://127.0.0.1:${PORT}/mcp`;
+  // v2.0.0+: hybrid auth — first-party clients send the startup token as a
+  // Bearer header; third-party clients can still use OAuth 2.1 discovery.
+  const token = getAuthToken();
 
   let config: Record<string, unknown> = {};
   try {
@@ -298,7 +311,7 @@ export async function registerMcpServer(): Promise<void> {
   }
 
   const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
-  servers['event-horizon'] = { type: 'http', url: mcpUrl };
+  servers['event-horizon'] = buildClaudeMcpEntry(getPort(), token);
   config.mcpServers = servers;
 
   await fsp.writeFile(claudeJsonPath, JSON.stringify(config, null, 2), 'utf8');

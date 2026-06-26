@@ -18,7 +18,7 @@ import {
   handleRegister as oauthHandleRegister,
   handleToken as oauthHandleToken,
   handleAuthorize as oauthHandleAuthorize,
-  validateAccessToken,
+  validateMcpAccessToken,
 } from './mcpOAuth.js';
 
 export const DEFAULT_PORT = 28765;
@@ -77,6 +77,17 @@ let wsBroadcastBuffer: Array<{ type: string; agentId: string; timestamp: number 
 let wsBroadcastTimer: ReturnType<typeof setTimeout> | null = null;
 const WS_DEBOUNCE_MS = 100;
 const WS_PING_INTERVAL_MS = 30_000;
+
+/** Lazy-initialized output channel for auth diagnostics. Never logs secrets. */
+let authLogChannel: import('vscode').OutputChannel | null = null;
+function authLog(message: string): void {
+  try {
+    if (!authLogChannel) {
+      authLogChannel = vscode.window.createOutputChannel('Event Horizon Auth');
+    }
+    authLogChannel.appendLine(`[${new Date().toISOString()}] ${message}`);
+  } catch { /* best effort */ }
+}
 
 function wsBroadcast(event: AgentEvent): void {
   wsBroadcastBuffer.push({
@@ -482,15 +493,17 @@ export function handleRequest(req: http.IncomingMessage, res: http.ServerRespons
     authToken !== null && bearer !== null && constantTimeEquals(bearer, authToken);
 
   // Per-route auth policy.
-  //   /mcp                 → JWT access token required (WWW-Authenticate on 401)
+  //   /mcp                 → startup token OR JWT (hybrid); 401 + WWW-Authenticate on failure
   //   /oauth/token         → body-authenticated (client_secret validated by handler)
   //   /oauth/register      → open per RFC 7591 (localhost binding is the real boundary)
   //   all other routes     → startup-token-authenticated (header Bearer)
   if (route === '/mcp') {
     if (authToken) {
-      const result = validateAccessToken(req.headers['authorization'], authToken);
+      const result = validateMcpAccessToken(req.headers['authorization'], authToken);
       if (!result.valid) {
         const metadataUrl = `${issuer}/.well-known/oauth-protected-resource`;
+        const bearerPresent = req.headers['authorization'] ? 'present' : 'absent';
+        authLog(`/mcp 401 reason=${result.reason ?? 'invalid'} bearer=${bearerPresent} method=${method}`);
         send(
           401,
           JSON.stringify({ error: 'Unauthorized', reason: result.reason }),
@@ -503,6 +516,8 @@ export function handleRequest(req: http.IncomingMessage, res: http.ServerRespons
     // /oauth/token: credential validation happens inside the handler.
     // /oauth/register: open per RFC 7591; server binds to 127.0.0.1 only.
   } else if (authToken && !hasValidStartupToken) {
+    const bearerPresent = req.headers['authorization'] ? 'present' : 'absent';
+    authLog(`${route} 401 reason=startup_token_mismatch bearer=${bearerPresent} method=${method}`);
     send(401, JSON.stringify({ error: 'Unauthorized' }));
     return;
   }
@@ -705,6 +720,7 @@ export async function startEventServer(cbs: EventServerCallbacks, port = DEFAULT
       const bearer = extractBearer(req.headers['authorization']);
       const ok = authToken === null || (bearer !== null && constantTimeEquals(bearer, authToken));
       if (!ok) {
+        authLog(`/ws 401 reason=startup_token_mismatch bearer=${bearer ? 'present' : 'absent'}`);
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
@@ -802,6 +818,9 @@ export function stopEventServer(): void {
     wsBroadcastTimer = null;
   }
   wsBroadcastBuffer = [];
+
+  authLogChannel?.dispose();
+  authLogChannel = null;
 
   if (server) {
     // Destroy active connections so the port is released immediately

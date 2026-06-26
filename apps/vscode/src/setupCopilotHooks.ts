@@ -15,9 +15,11 @@ import * as vscode from 'vscode';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { getAuthToken } from './eventServer.js';
+import { getAuthToken, getEventServerPort } from './eventServer.js';
 
-const PORT = 28765;
+function getPort(): number {
+  return getEventServerPort();
+}
 const HOOKS_DIR = path.join(os.homedir(), '.event-horizon');
 const HOOKS_FILE = path.join(HOOKS_DIR, 'copilot-hooks.json');
 /** Path as it appears in the VS Code setting (tilde-based for portability). */
@@ -48,11 +50,11 @@ const EH_HOOK_EVENTS = [
 function buildCurlCommand(): string {
   const token = getAuthToken();
   const authHeader = token ? `-H "Authorization: Bearer ${token}"` : '';
-  return `curl.exe -s -X POST http://127.0.0.1:${PORT}/copilot -H "Content-Type: application/json" ${authHeader} --data-binary "@-"`;
+  return `curl.exe -s -X POST http://127.0.0.1:${getPort()}/copilot -H "Content-Type: application/json" ${authHeader} --data-binary "@-"`;
 }
 
 function isEhCommand(cmd: string): boolean {
-  return cmd.includes(`127.0.0.1:${PORT}/copilot`);
+  return /127\.0\.0\.1:\d+\/copilot/.test(cmd);
 }
 
 function isCurrentEhCommand(cmd: string): boolean {
@@ -150,6 +152,17 @@ export async function setupCopilotHooks(): Promise<void> {
 }
 
 /**
+ * Build a Copilot MCP server entry (pure function, testable without FS).
+ * Includes the startup token as a static Authorization header so first-party
+ * clients connect directly; the hybrid `/mcp` route also accepts JWTs.
+ */
+export function buildCopilotMcpEntry(port: number, token: string | null): Record<string, unknown> {
+  const entry: Record<string, unknown> = { type: 'http', url: `http://127.0.0.1:${port}/mcp` };
+  if (token) entry.headers = { Authorization: `Bearer ${token}` };
+  return entry;
+}
+
+/**
  * Register Event Horizon as an MCP server in VS Code's MCP config.
  * Copilot agent mode reads MCP servers from .vscode/mcp.json (workspace) or
  * the user-level setting via "MCP: Open User Configuration".
@@ -159,10 +172,9 @@ export async function registerCopilotMcpServer(): Promise<void> {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) return;
 
-  // v2.0.0: MCP URL no longer carries ?token=. Clients discover auth via
-  // RFC 9728 .well-known/oauth-protected-resource and obtain JWT access
-  // tokens through OAuth 2.1 client_credentials flow.
-  const mcpUrl = `http://127.0.0.1:${PORT}/mcp`;
+  // v2.0.0+: hybrid auth — first-party clients send the startup token as a
+  // Bearer header; third-party clients can still use OAuth 2.1 discovery.
+  const token = getAuthToken();
 
   for (const folder of folders) {
     const vscodePath = path.join(folder.uri.fsPath, '.vscode');
@@ -177,7 +189,7 @@ export async function registerCopilotMcpServer(): Promise<void> {
     }
 
     const servers = (config.servers ?? {}) as Record<string, unknown>;
-    servers['event-horizon'] = { type: 'http', url: mcpUrl };
+    servers['event-horizon'] = buildCopilotMcpEntry(getPort(), token);
     config.servers = servers;
 
     await fsp.mkdir(vscodePath, { recursive: true });
